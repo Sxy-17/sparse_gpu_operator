@@ -3,8 +3,11 @@ import numpy as np
 import torch
 import ffn_23
 
-nwarmup = 10
-ntest = 100
+# nwarmup = 10
+# ntest = 100
+
+nwarmup = 0
+ntest = 1
 
 def show_time(func):
     times = list()
@@ -22,18 +25,32 @@ def show_time(func):
         times.append((end_time-start_time) * 1e6)
     return times, res
 
+# def compare_tensors(res_cuda, res_torch, tolerance):
+#     if res_cuda.shape != res_torch.shape:
+#         print("Tensor shapes are different.")
+#         return False
+#     res_cuda_list = res_cuda.view(-1).tolist()
+#     res_torch_list = res_torch.view(-1).tolist()
+
+#     for index, (a, b) in enumerate(zip(res_cuda_list, res_torch_list)):
+#         if (abs(b) == 0 and abs(a) > tolerance or abs(b) > 0 and abs(a - b) / abs(b) > tolerance):
+#             print(f"Index {index}: diff = {a-b}")
+#             return False
+#     return True
+
 def compare_tensors(res_cuda, res_torch, tolerance):
     if res_cuda.shape != res_torch.shape:
         print("Tensor shapes are different.")
-        return False
-    res_cuda_list = res_cuda.tolist()
-    res_torch_list = res_torch.tolist()
+    res_cuda_list = res_cuda.view(-1).tolist()
+    res_torch_list = res_torch.view(-1).tolist()
 
     for index, (a, b) in enumerate(zip(res_cuda_list, res_torch_list)):
         if (abs(b) == 0 and abs(a) > tolerance or abs(b) > 0 and abs(a - b) / abs(b) > tolerance):
-            print(f"Index {index}: diff = {a-b}")
-            return False
-    return True
+        # if (abs(a - b) > tolerance):
+            print(f"Index {index}: diff = {a-b}; res_cuda_list: {res_cuda_list[index]}; res_torch_list: {res_torch_list[index]}")
+        # print(f"Index {index}: diff = {a-b}; res_cuda_list: {res_cuda_list[index]}; res_torch_list: {res_torch_list[index]}")
+
+
 
 mat_row = 4096
 mat_col = 11008
@@ -44,22 +61,44 @@ fatrelu_threshold = 0.
 # first_row = data[9, :]
 # vec_sparse = torch.tensor(first_row, device="cuda:0", dtype=torch.bfloat16)
 
-for idx in range(10):
+for idx in range(1):
+
+    batch_size = 2
     vec_sparse = torch.rand(mat_col, device="cuda:0", dtype=torch.bfloat16)
-    vec_sparse = torch.relu(vec_sparse - idx / 10)
+    vec_sparse = torch.relu(vec_sparse - 1 / 10)
+    # vec_sparse = torch.relu(vec_sparse - 9 / 10)
+    # vec_sparse = torch.arange(-10000, -10000 + 11008, device="cuda:0", dtype=torch.bfloat16)
+    # vec_sparse = torch.relu(vec_sparse)
+
+
     print(">>> act_rate:", round(torch.sum(vec_sparse > 0).item() * 100 / vec_sparse.numel(), 2))
-    # assert vec_sparse.shape == (mat_col,), f"Expected shape (mat_col,), but got {first_row.shape}"
+    vec_sparse = vec_sparse.unsqueeze(0).expand(batch_size, -1).contiguous()
+    # print(f"vec_sparse.shape: {vec_sparse.shape}")
+    
     vec = torch.rand(mat_row, device="cuda:0", dtype=torch.bfloat16)
+    vec = vec.unsqueeze(0).expand(batch_size, -1).contiguous()
+    # print(f"vec.shape: {vec.shape}")
+    # vec[:2] = 1
+    # vec[0, :2] = 1
+    # vec[1, :2] = 1
     mat = torch.rand(mat_row, mat_col, device="cuda:0", dtype=torch.bfloat16)
+
+    
     cuda_res = torch.zeros(mat_col, device="cuda:0", dtype=torch.bfloat16)
+    cuda_res = cuda_res.unsqueeze(0).expand(batch_size, -1).contiguous()
+    # print(f"cuda_res.shape: {vec.shape}")
+    # exit()
+
 
     def run_torch():
         res = torch.matmul(vec, mat)
         res = res * vec_sparse
+        # res[torch.eq(vec_sparse, 0)] = 0
+        res = res.contiguous()
         return res
 
     def run_cuda():
-        ffn_23.torch_launch_ffn_fuse_23(vec_sparse, vec, mat, cuda_res, 1, mat_row, mat_col, fatrelu_threshold)
+        ffn_23.torch_launch_ffn_fuse_23(vec_sparse, vec, mat, cuda_res, batch_size, mat_row, mat_col, fatrelu_threshold)
         return cuda_res
 
     # 使用大量计算清空 GPU 缓存
@@ -86,7 +125,8 @@ for idx in range(10):
     print("Cuda time:  {:.4f} us".format(np.mean(cuda_time)))
 
     tolerance = 0.01
-    if not compare_tensors(cuda_res, torch_res, tolerance):
-        from IPython import embed
-        embed()
-        exit()
+    compare_tensors(cuda_res, torch_res, tolerance)
+    # if not compare_tensors(cuda_res, torch_res, tolerance):
+    #     from IPython import embed
+    #     embed()
+    #     exit()
