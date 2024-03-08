@@ -3,11 +3,11 @@ import numpy as np
 import torch
 import ffn_23
 
-# nwarmup = 10
-# ntest = 100
+nwarmup = 10
+ntest = 100
 
-nwarmup = 0
-ntest = 1
+# nwarmup = 0
+# ntest = 1
 
 def show_time(func):
     times = list()
@@ -51,7 +51,6 @@ def compare_tensors(res_cuda, res_torch, tolerance):
         # print(f"Index {index}: diff = {a-b}; res_cuda_list: {res_cuda_list[index]}; res_torch_list: {res_torch_list[index]}")
 
 
-
 mat_row = 4096
 mat_col = 11008
 fatrelu_threshold = 0.
@@ -65,8 +64,8 @@ for idx in range(1):
 
     batch_size = 2
     vec_sparse = torch.rand(mat_col, device="cuda:0", dtype=torch.bfloat16)
-    vec_sparse = torch.relu(vec_sparse - 1 / 10)
-    # vec_sparse = torch.relu(vec_sparse - 9 / 10)
+    # vec_sparse = torch.relu(vec_sparse - 5 / 10)
+    vec_sparse = torch.relu(vec_sparse - 5 / 10)
     # vec_sparse = torch.arange(-10000, -10000 + 11008, device="cuda:0", dtype=torch.bfloat16)
     # vec_sparse = torch.relu(vec_sparse)
 

@@ -7,8 +7,7 @@
 
 #define ROW_OPT 4096
 #define COL_OPT 11008
-#define MAX_BATCH_SIZE_DIV_32 8
-
+#define MAX_BATCH_SIZE_DIV_32 2
 
 // Col major
 __global__ void ffn_fuse_23(nv_bfloat16 *vec_sparse, nv_bfloat16 *vec_input,
@@ -39,7 +38,7 @@ __global__ void ffn_fuse_23(nv_bfloat16 *vec_sparse, nv_bfloat16 *vec_input,
 
     // bit-wise index
     bool is_activated = false;
-    unsigned int batch_idx_arr[MAX_BATCH_SIZE_DIV_32] = {0}; // max supported batch size is 256
+    unsigned int batch_idx_arr[MAX_BATCH_SIZE_DIV_32] = {0}; // max supported batch size is 64
     for (int batch_iter = 0; batch_iter < batch_size; batch_iter++)
     {
         vec_sparse_val = *(vec_sparse_p + batch_iter * mat_col);
@@ -51,11 +50,17 @@ __global__ void ffn_fuse_23(nv_bfloat16 *vec_sparse, nv_bfloat16 *vec_input,
         }
     }
 
-
     if (!is_activated)
-        ; // TODO
+    {
+        if (threadIdx.x == 0)
+        {
+            *res_p = __float2bfloat16(0.f);
+        }
+    }
     else
     {
+        __shared__ float4 mat_up_shared[16]; // num_per_threadx /8
+        bool use_shared_memory = false;
 
         // Loop through batch_idx_arr and get decimal value of batch_activated
         for (int batch_chunk_iter = 0; batch_chunk_iter < MAX_BATCH_SIZE_DIV_32; batch_chunk_iter++)
@@ -79,7 +84,15 @@ __global__ void ffn_fuse_23(nv_bfloat16 *vec_sparse, nv_bfloat16 *vec_input,
                         const nv_bfloat162 *vec_input_h3 = (nv_bfloat162 *)&vec_input_f_val.z;
                         const nv_bfloat162 *vec_input_h4 = (nv_bfloat162 *)&vec_input_f_val.w;
 
-                        mat_up_f_val = mat_up_f4[i];
+                        if (!use_shared_memory)
+                        {
+                            mat_up_f_val = mat_up_f4[i];
+                        }
+                        else
+                        {
+                            // Read mat_up_f_val from shared memory
+                            mat_up_f_val = mat_up_shared[i];
+                        }
 
                         const nv_bfloat162 *mat_up_h1 = (nv_bfloat162 *)&mat_up_f_val.x;
                         const nv_bfloat162 *mat_up_h2 = (nv_bfloat162 *)&mat_up_f_val.y;
@@ -95,19 +108,41 @@ __global__ void ffn_fuse_23(nv_bfloat16 *vec_sparse, nv_bfloat16 *vec_input,
                         sum += __bfloat162float(vec_input_h4->x) * __bfloat162float(mat_up_h4->x);
                         sum += __bfloat162float(vec_input_h4->y) * __bfloat162float(mat_up_h4->y);
 
-
+                        // Update use_shared_memory for the next iteration
+                        if (!use_shared_memory)
+                        {
+                            // Write mat_up_f_val to shared memory for the next iteration
+                            mat_up_shared[i] = mat_up_f_val;
+                        }
                     }
 
-                    __shared__ float warp_sum[32];
-                    warp_sum[threadIdx.y] = 0.0f;
-                    atomicAdd(&warp_sum[threadIdx.y], sum);
+                    // if (col_id == 0 && threadIdx.x == 0)
+                    //     printf("sum = %f\n", sum);
+                    sum += __shfl_down_sync(0xffffffff, sum, 16);
+                    sum += __shfl_down_sync(0xffffffff, sum, 8);
+                    sum += __shfl_down_sync(0xffffffff, sum, 4);
+                    sum += __shfl_down_sync(0xffffffff, sum, 2);
+                    sum += __shfl_down_sync(0xffffffff, sum, 1);
+                    // if (col_id == 0 && threadIdx.x == 0)
+                    //     printf("[AFTER]sum = %f\n", sum);
+                    // __shared__ float warp_sum[32];
+                    // warp_sum[threadIdx.y] = 0.0f;
+                    // atomicAdd(&warp_sum[threadIdx.y], sum);
 
+                    // __syncthreads();
+                    // __syncwarp();
                     if (threadIdx.x == 0)
                     {
-                        float sum = warp_sum[threadIdx.y];
+
+                        // float sum = warp_sum[threadIdx.y];
+                        float sum_res = sum;
+                        // if (col_id == 0)
+                        //     printf("[NEW]sum_res = %f\n", sum_res);
                         vec_sparse_val = *(vec_sparse_p + batch_activated * mat_col);
-                        sum = sum * __bfloat162float(vec_sparse_val);
-                        *(res_p + batch_activated * mat_col) = __float2bfloat16(sum);
+                        // if (col_id == 0)
+                        //     printf("[NEW]vec_sparse_val = %f\n", vec_sparse_val);
+                        sum_res = sum_res * __bfloat162float(vec_sparse_val);
+                        *(res_p + batch_activated * mat_col) = __float2bfloat16(sum_res);
                     }
 
                 } // end of one batch
